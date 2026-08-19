@@ -4,84 +4,106 @@ Phase 1 — CNN Vessel Segmentation (nnU-Net baseline)
 
 Purpose
 -------
-nnU-Net is not a Python model class you import and call — it is a full
-CLI-driven training framework. The actual "work" needed to use it is
-converting your raw dataset into nnU-Net's required folder structure
-and naming convention, plus generating its dataset.json config.
+Converts the nested ImageCAS dataset layout (e.g. extracted/1-200, 201-400, etc.)
+into nnU-Net v2's required folder structure and naming convention, plus generates
+the dataset.json configuration.
 
-This script does exactly that conversion step, and is fully testable
-without the real ~87GB ImageCAS download: point it at any folder of
-paired (image, label) NIfTI files — including a handful of synthetic
-dummy volumes — and it will lay them out correctly.
-
-This is a genuine, permanent, dataset-independent piece of Phase 1:
-whenever you're on the lab GPU machines with real ImageCAS data, you
-run this same script once, then hand off to nnU-Net's own CLI:
-
-    nnUNetv2_plan_and_preprocess -d 001 --verify_dataset_integrity
-    nnUNetv2_train 001 3d_fullres 0
-
-Expected input layout (what ImageCAS actually ships as, after unzip):
-    raw_imagecas/
-        1.img.nii.gz
-        1.label.nii.gz
-        2.img.nii.gz
-        2.label.nii.gz
-        ...
+Expected input layout:
+    data/extracted/
+        1-200/
+            1.img.nii.gz
+            1.label.nii.gz
+            ...
+        201-400/
+            201.img.nii.gz
+            201.label.nii.gz
+            ...
 
 Produces nnU-Net v2's required layout:
     nnUNet_raw/Dataset001_ImageCAS/
         imagesTr/1_0000.nii.gz, 2_0000.nii.gz, ...
         labelsTr/1.nii.gz, 2.nii.gz, ...
         dataset.json
+
+Usage:
+    python Phase1_nnUNet/imagecas_to_nnunet.py --data_dir data/extracted --nnunet_raw nnUNet_raw
 """
 
-import json
-import shutil
-from pathlib import Path
+from __future__ import annotations
 
+import argparse
+import json
+import re
+import shutil
+import sys
+from pathlib import Path
 
 DATASET_ID = 1
 DATASET_NAME = f"Dataset{DATASET_ID:03d}_ImageCAS"
 
 
-def convert_imagecas_to_nnunet(raw_dir: str, nnunet_raw_dir: str,
-                                image_suffix: str = ".img.nii.gz",
-                                label_suffix: str = ".label.nii.gz") -> dict:
-    """
-    Convert a flat folder of ImageCAS-style paired NIfTI files into
-    nnU-Net v2's required raw dataset structure.
+def normalize_case_key(path: Path) -> str:
+    name = path.name.lower()
+    for ext in [".img.nii.gz", ".label.nii.gz", ".nii.gz", ".nii", ".mha", ".nrrd"]:
+        if name.endswith(ext):
+            name = name[: -len(ext)]
+            break
+    key = re.sub(r"[^0-9a-zA-Z]", "", name)
+    return key
 
-    Parameters
-    ----------
-    raw_dir : path to the folder containing "<id><image_suffix>" and
-              "<id><label_suffix>" file pairs (real ImageCAS or dummy data).
-    nnunet_raw_dir : path to nnU-Net's expected `nnUNet_raw/` root.
 
-    Returns
-    -------
-    dict summary: how many cases were found and converted.
+def convert_imagecas_to_nnunet(
+    raw_dir: str | Path,
+    nnunet_raw_dir: str | Path,
+    image_suffix: str = ".img.nii.gz",
+    label_suffix: str = ".label.nii.gz",
+) -> dict:
     """
-    raw_dir = Path(raw_dir)
-    out_root = Path(nnunet_raw_dir) / DATASET_NAME
+    Recursively scan ImageCAS folders (1-200, 201-400, etc.) and convert paired
+    volumes into nnU-Net v2 raw dataset structure.
+    """
+    raw_dir = Path(raw_dir).resolve()
+    out_root = Path(nnunet_raw_dir).resolve() / DATASET_NAME
     images_tr = out_root / "imagesTr"
     labels_tr = out_root / "labelsTr"
     images_tr.mkdir(parents=True, exist_ok=True)
     labels_tr.mkdir(parents=True, exist_ok=True)
 
-    image_files = sorted(raw_dir.glob(f"*{image_suffix}"))
+    # Recursive scan to find all image files across subfolders
+    image_files = sorted([
+        p for p in raw_dir.rglob(f"*{image_suffix}")
+        if not p.name.startswith("._")
+    ])
+
+    if not image_files:
+        # Fallback to general .nii.gz check
+        image_files = sorted([
+            p for p in raw_dir.rglob("*.nii.gz")
+            if "label" not in p.name.lower() and "mask" not in p.name.lower() and not p.name.startswith("._")
+        ])
+
     case_ids = []
 
     for img_path in image_files:
-        case_id = img_path.name[: -len(image_suffix)]
-        label_path = raw_dir / f"{case_id}{label_suffix}"
+        case_id = normalize_case_key(img_path)
+        
+        # Check matching label in the same directory or globally in raw_dir
+        label_path = img_path.parent / f"{case_id}{label_suffix}"
         if not label_path.exists():
-            print(f"  [skip] {case_id}: no matching label file found")
-            continue
+            potential = list(img_path.parent.glob(f"*{case_id}*label*.nii.gz"))
+            if potential:
+                label_path = potential[0]
+            else:
+                global_potential = list(raw_dir.rglob(f"*{case_id}*label*.nii.gz"))
+                if global_potential:
+                    label_path = global_potential[0]
+                else:
+                    print(f"  [skip] {case_id}: no matching label file found")
+                    continue
 
         # nnU-Net naming convention: <case>_<channel:04d>.nii.gz for images
-        shutil.copy(img_path, images_tr / f"{case_id}_0000.nii.gz")
-        shutil.copy(label_path, labels_tr / f"{case_id}.nii.gz")
+        shutil.copy2(img_path, images_tr / f"{case_id}_0000.nii.gz")
+        shutil.copy2(label_path, labels_tr / f"{case_id}.nii.gz")
         case_ids.append(case_id)
 
     dataset_json = {
@@ -95,64 +117,103 @@ def convert_imagecas_to_nnunet(raw_dir: str, nnunet_raw_dir: str,
     with open(out_root / "dataset.json", "w") as f:
         json.dump(dataset_json, f, indent=2)
 
-    return {"cases_found": len(image_files), "cases_converted": len(case_ids),
-            "output_dir": str(out_root)}
+    return {
+        "cases_found": len(image_files),
+        "cases_converted": len(case_ids),
+        "output_dir": str(out_root),
+    }
 
 
-def _make_dummy_imagecas_folder(target_dir: str, n_cases: int = 3):
-    """
-    Builds a handful of small synthetic NIfTI volumes shaped/named like
-    real ImageCAS files, purely so this conversion script (and, later,
-    `nnUNetv2_plan_and_preprocess --verify_dataset_integrity`) can be
-    smoke-tested without downloading any real data.
-    """
+def _make_dummy_imagecas_folder(target_dir: Path, n_cases: int = 3) -> Path:
+    """Builds synthetic NIfTI volumes in 1-200 layout for testing."""
     import numpy as np
     import nibabel as nib
 
-    target_dir = Path(target_dir)
-    target_dir.mkdir(parents=True, exist_ok=True)
+    subfolder = target_dir / "1-200"
+    subfolder.mkdir(parents=True, exist_ok=True)
     affine = np.eye(4)
-    affine[0, 0] = affine[1, 1] = 0.4   # realistic-ish in-plane spacing (mm)
-    affine[2, 2] = 0.5                  # slice spacing (mm)
+    affine[0, 0] = affine[1, 1] = 0.5
+    affine[2, 2] = 0.5
 
     rng = np.random.default_rng(42)
     for i in range(1, n_cases + 1):
-        shape = (64, 64, 64)
-        # fake CT-ish HU volume: mostly soft tissue, some vessel-bright voxels
+        shape = (48, 48, 48)
         volume = rng.normal(loc=40, scale=60, size=shape).astype(np.float32)
         label = np.zeros(shape, dtype=np.uint8)
-        # carve a fake curved "vessel" tube into the label + brighten it in the image
         for z in range(shape[2]):
-            cx = 32 + int(10 * np.sin(z / 8))
-            cy = 32 + int(6 * np.cos(z / 10))
-            label[cx - 1:cx + 2, cy - 1:cy + 2, z] = 1
-            volume[cx - 1:cx + 2, cy - 1:cy + 2, z] += 300  # calcified-plaque-like HU spike
+            cx = 24 + int(6 * np.sin(z / 6.0))
+            cy = 24 + int(4 * np.cos(z / 8.0))
+            label[cx - 1 : cx + 2, cy - 1 : cy + 2, z] = 1
+            volume[cx - 1 : cx + 2, cy - 1 : cy + 2, z] += 250.0
 
-        nib.save(nib.Nifti1Image(volume, affine), target_dir / f"{i}.img.nii.gz")
-        nib.save(nib.Nifti1Image(label, affine), target_dir / f"{i}.label.nii.gz")
+        nib.save(nib.Nifti1Image(volume, affine), subfolder / f"{i}.img.nii.gz")
+        nib.save(nib.Nifti1Image(label, affine), subfolder / f"{i}.label.nii.gz")
 
     return target_dir
 
 
-if __name__ == "__main__":
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Convert ImageCAS dataset (including subfolders 1-200, 201-400...) to nnU-Net v2 raw format"
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="data/extracted",
+        help="Path to extracted ImageCAS folder containing range subfolders (1-200, 201-400...)",
+    )
+    parser.add_argument(
+        "--nnunet_raw",
+        type=str,
+        default="Phase1_nnUNet/nnUNet_raw",
+        help="Target nnUNet_raw directory",
+    )
+    parser.add_argument(
+        "--test_mode",
+        action="store_true",
+        help="Generate synthetic dummy cases to smoke test the conversion",
+    )
+    args = parser.parse_args()
+
     print("=" * 70)
-    print("Phase 1 — nnU-Net baseline: dataset conversion smoke test")
+    print("Phase 1 — nnU-Net baseline: ImageCAS Dataset Conversion")
     print("=" * 70)
 
-    dummy_raw = "/home/claude/Phase1_nnUNet/_dummy_raw_imagecas"
-    nnunet_raw = "/home/claude/Phase1_nnUNet/_dummy_nnUNet_raw"
+    if args.test_mode:
+        dummy_raw = Path("Phase1_nnUNet/_test_raw_imagecas")
+        dummy_out = Path("Phase1_nnUNet/_test_nnUNet_raw")
+        print(f"\n[Test Mode] Generating synthetic ImageCAS cases in {dummy_raw}...")
+        _make_dummy_imagecas_folder(dummy_raw, n_cases=3)
+        summary = convert_imagecas_to_nnunet(dummy_raw, dummy_out)
+        shutil.rmtree(dummy_raw, ignore_errors=True)
+        shutil.rmtree(dummy_out, ignore_errors=True)
+        print("\nTest Conversion Summary:")
+        for k, v in summary.items():
+            print(f"  {k}: {v}")
+        print("\n[SUCCESS] Test mode completed.")
+        return
 
-    print(f"\n[1/2] Generating {3} synthetic ImageCAS-style cases -> {dummy_raw}")
-    _make_dummy_imagecas_folder(dummy_raw, n_cases=3)
+    raw_path = Path(args.data_dir).expanduser().resolve()
+    if not raw_path.exists():
+        # Try Data/extracted
+        alt = raw_path.parent / "Data" / "extracted" if raw_path.name == "extracted" else None
+        if alt and alt.exists():
+            raw_path = alt
+        else:
+            raise FileNotFoundError(f"Raw directory does not exist: {raw_path}")
 
-    print(f"[2/2] Converting to nnU-Net v2 raw dataset layout -> {nnunet_raw}")
-    summary = convert_imagecas_to_nnunet(dummy_raw, nnunet_raw)
-
-    print("\nSummary:")
+    summary = convert_imagecas_to_nnunet(raw_path, args.nnunet_raw)
+    print("\nConversion Summary:")
     for k, v in summary.items():
         print(f"  {k}: {v}")
 
-    print("\nOn the lab GPU machines, with real ImageCAS data, the exact next commands are:")
-    print("  export nnUNet_raw=<nnunet_raw_dir>")
+    print("\nNext commands for nnU-Net v2:")
+    print(f"  export nnUNet_raw={Path(args.nnunet_raw).resolve()}")
+    print(f"  export nnUNet_preprocessed={Path(args.nnunet_raw).resolve().parent / 'nnUNet_preprocessed'}")
+    print(f"  export nnUNet_results={Path(args.nnunet_raw).resolve().parent / 'nnUNet_results'}")
     print(f"  nnUNetv2_plan_and_preprocess -d {DATASET_ID} --verify_dataset_integrity")
     print(f"  nnUNetv2_train {DATASET_ID} 3d_fullres 0")
+
+
+if __name__ == "__main__":
+    main()

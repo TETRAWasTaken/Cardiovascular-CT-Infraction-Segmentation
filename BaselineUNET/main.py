@@ -293,18 +293,37 @@ def main() -> None:
             args.data_dir, val_ratio=args.val_ratio, seed=args.seed
         )
     else:
-        # Default check for local manifest
+        # Default check for local manifest or default data directory
         default_manifest = Path("BaselineUNET/imagecas_manifest.csv")
+        possible_dirs = [
+            Path("data/extracted"),
+            Path("Data/extracted"),
+            Path("data"),
+            Path("Data"),
+        ]
+        
         if default_manifest.exists():
             print(f"Found default manifest at: {default_manifest}")
             train_files, val_files = load_manifest_data_dicts(
                 default_manifest, val_ratio=args.val_ratio, seed=args.seed
             )
         else:
-            raise ValueError(
-                "Must provide either --manifest <path> or --data_dir <path>. "
-                "See Phase1_nnUNet/data_ingestion.py to generate imagecas_manifest.csv."
-            )
+            found_dir = None
+            for p in possible_dirs:
+                if p.exists() and any(p.rglob("*.nii.gz")):
+                    found_dir = p
+                    break
+
+            if found_dir:
+                print(f"Auto-detected dataset directory: {found_dir}")
+                train_files, val_files = scan_directory_data_dicts(
+                    found_dir, val_ratio=args.val_ratio, seed=args.seed
+                )
+            else:
+                raise ValueError(
+                    "Could not find default manifest or data directory. "
+                    "Please provide --manifest BaselineUNET/imagecas_manifest.csv or --data_dir Data/extracted"
+                )
 
     print(f"Dataset summary: {len(train_files)} training volumes, {len(val_files)} validation volumes")
 

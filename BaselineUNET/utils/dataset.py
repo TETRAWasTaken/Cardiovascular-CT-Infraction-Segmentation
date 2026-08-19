@@ -3,7 +3,8 @@ ImageCAS Dataset & MONAI Transform Pipeline for BaselineUNET
 ============================================================
 
 Provides:
-- Manifest loader for `imagecas_manifest.csv`
+- Manifest loader for `imagecas_manifest.csv` supporting nested folders (1-200, 201-400...)
+  and official splits from `imageCAS_data_split.xlsx`
 - Dynamic train/validation partitioning
 - Foreground-biased 3D patch cropping (RandCropByPosNegLabeld)
 - Sliding-window compatible validation transforms
@@ -39,6 +40,7 @@ def load_manifest_data_dicts(
 ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """
     Load image-mask pairs from imagecas_manifest.csv and split into train/val sets.
+    If official split tags exist ('train', 'val', 'test'), uses them directly.
     """
     manifest_path = Path(manifest_path).resolve()
     if not manifest_path.exists():
@@ -55,7 +57,29 @@ def load_manifest_data_dicts(
     if len(df) == 0:
         raise ValueError(f"No valid image/mask pairs found in manifest: {manifest_path}")
 
-    # Build data dictionaries
+    # Check if official split is provided
+    if "split" in df.columns and df["split"].nunique() > 1:
+        train_df = df[df["split"].str.lower().isin(["train", "training"])]
+        val_df = df[df["split"].str.lower().isin(["val", "validation", "test"])]
+        
+        # If val is empty, split train
+        if len(val_df) == 0:
+            val_df = train_df.sample(frac=val_ratio, random_state=seed)
+            train_df = train_df.drop(val_df.index)
+
+        train_files = [
+            {"image": row["image_path"], "label": row["mask_path"]}
+            for _, row in train_df.iterrows()
+            if Path(row["image_path"]).exists() and Path(row["mask_path"]).exists()
+        ]
+        val_files = [
+            {"image": row["image_path"], "label": row["mask_path"]}
+            for _, row in val_df.iterrows()
+            if Path(row["image_path"]).exists() and Path(row["mask_path"]).exists()
+        ]
+        return train_files, val_files
+
+    # Build data dictionaries with automatic random split
     data_dicts = [
         {"image": row["image_path"], "label": row["mask_path"]}
         for _, row in df.iterrows()
@@ -65,7 +89,6 @@ def load_manifest_data_dicts(
     if not data_dicts:
         raise FileNotFoundError("None of the image/mask paths in the manifest exist on disk.")
 
-    # Train / Val Split
     generator = torch.Generator().manual_seed(seed)
     indices = torch.randperm(len(data_dicts), generator=generator).tolist()
     
@@ -87,29 +110,44 @@ def scan_directory_data_dicts(
     seed: int = 42,
 ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """
-    Fallback directory scanner if manifest is not pre-computed.
+    Fallback directory scanner across nested subdirectories (1-200, 201-400, etc.).
     """
     data_dir = Path(data_dir).resolve()
-    image_files = sorted(data_dir.rglob(f"*{image_suffix}"))
-    
+    image_files = sorted([
+        p for p in data_dir.rglob(f"*{image_suffix}")
+        if not p.name.startswith("._")
+    ])
+
+    if not image_files:
+        # Fallback to general .nii.gz images
+        image_files = sorted([
+            p for p in data_dir.rglob("*.nii.gz")
+            if "label" not in p.name.lower() and "mask" not in p.name.lower() and not p.name.startswith("._")
+        ])
+
     data_dicts = []
     for img_path in image_files:
         name = img_path.name
-        case_id = name[: -len(image_suffix)]
+        # Match case ID
+        case_id = name.replace(image_suffix, "")
         label_name = f"{case_id}{label_suffix}"
         label_path = img_path.parent / label_name
-        if not label_path.exists():
-            # Try searching in raw_dir
-            potential_labels = list(data_dir.rglob(label_name))
-            if potential_labels:
-                label_path = potential_labels[0]
-            else:
-                continue
 
-        data_dicts.append({"image": str(img_path), "label": str(label_path)})
+        if not label_path.exists():
+            potential = list(img_path.parent.glob(f"*{case_id}*label*.nii.gz"))
+            if potential:
+                label_path = potential[0]
+            else:
+                global_potential = list(data_dir.rglob(f"*{case_id}*label*.nii.gz"))
+                if global_potential:
+                    label_path = global_potential[0]
+                else:
+                    continue
+
+        data_dicts.append({"image": str(img_path.resolve()), "label": str(label_path.resolve())})
 
     if not data_dicts:
-        raise FileNotFoundError(f"No paired {image_suffix} and {label_suffix} files found in {data_dir}")
+        raise FileNotFoundError(f"No paired images and labels found in {data_dir}")
 
     generator = torch.Generator().manual_seed(seed)
     indices = torch.randperm(len(data_dicts), generator=generator).tolist()
@@ -241,7 +279,7 @@ def build_dataloaders(
 
     val_loader = DataLoader(
         val_ds,
-        batch_size=1,  # Full volumes evaluated 1 at a time via sliding window
+        batch_size=1,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
