@@ -47,20 +47,36 @@ def load_manifest_data_dicts(
         raise FileNotFoundError(f"Manifest file not found at: {manifest_path}")
 
     df = pd.read_csv(manifest_path)
+    total_raw_rows = len(df)
     
-    # Filter valid pairs
-    if "has_mask" in df.columns:
-        df = df[df["has_mask"] == True]
-    if "status" in df.columns:
-        df = df[df["status"] == "ok"]
+    # Robust filtering for valid image and mask paths
+    if "mask_path" in df.columns and "image_path" in df.columns:
+        # Check non-empty strings and not-NA
+        valid_mask = (
+            df["mask_path"].notna()
+            & (df["mask_path"].astype(str).str.strip() != "")
+            & (df["mask_path"].astype(str).str.lower() != "nan")
+        )
+        valid_image = (
+            df["image_path"].notna()
+            & (df["image_path"].astype(str).str.strip() != "")
+            & (df["image_path"].astype(str).str.lower() != "nan")
+        )
+        df = df[valid_mask & valid_image]
+    elif "has_mask" in df.columns:
+        df = df[df["has_mask"].astype(str).str.lower().isin(["true", "1", "t", "yes"])]
 
     if len(df) == 0:
-        raise ValueError(f"No valid image/mask pairs found in manifest: {manifest_path}")
+        raise ValueError(
+            f"No valid image/mask pairs found in manifest ({total_raw_rows} total rows scanned in {manifest_path}).\n"
+            f"Please regenerate the manifest with the updated ingestion script:\n"
+            f"  python Phase1_nnUNet/data_ingestion.py --data_dir Data/extracted --output_csv BaselineUNET/imagecas_manifest.csv"
+        )
 
     # Check if official split is provided
-    if "split" in df.columns and df["split"].nunique() > 1:
-        train_df = df[df["split"].str.lower().isin(["train", "training"])]
-        val_df = df[df["split"].str.lower().isin(["val", "validation", "test"])]
+    if "split" in df.columns and df["split"].notna().sum() > 0 and df["split"].nunique() > 1:
+        train_df = df[df["split"].astype(str).str.lower().isin(["train", "training"])]
+        val_df = df[df["split"].astype(str).str.lower().isin(["val", "validation", "test"])]
         
         # If val is empty, split train
         if len(val_df) == 0:
@@ -68,26 +84,35 @@ def load_manifest_data_dicts(
             train_df = train_df.drop(val_df.index)
 
         train_files = [
-            {"image": row["image_path"], "label": row["mask_path"]}
+            {"image": str(Path(row["image_path"]).resolve()), "label": str(Path(row["mask_path"]).resolve())}
             for _, row in train_df.iterrows()
             if Path(row["image_path"]).exists() and Path(row["mask_path"]).exists()
         ]
         val_files = [
-            {"image": row["image_path"], "label": row["mask_path"]}
+            {"image": str(Path(row["image_path"]).resolve()), "label": str(Path(row["mask_path"]).resolve())}
             for _, row in val_df.iterrows()
             if Path(row["image_path"]).exists() and Path(row["mask_path"]).exists()
         ]
-        return train_files, val_files
+        if train_files and val_files:
+            return train_files, val_files
 
     # Build data dictionaries with automatic random split
     data_dicts = [
-        {"image": row["image_path"], "label": row["mask_path"]}
+        {"image": str(Path(row["image_path"]).resolve()), "label": str(Path(row["mask_path"]).resolve())}
         for _, row in df.iterrows()
         if Path(row["image_path"]).exists() and Path(row["mask_path"]).exists()
     ]
 
     if not data_dicts:
-        raise FileNotFoundError("None of the image/mask paths in the manifest exist on disk.")
+        # Check first 3 missing paths for debugging
+        sample_img = df.iloc[0]["image_path"] if len(df) > 0 else "N/A"
+        sample_mask = df.iloc[0]["mask_path"] if len(df) > 0 else "N/A"
+        raise FileNotFoundError(
+            f"Found {len(df)} pairs in manifest, but none of the files exist on disk.\n"
+            f"Sample missing image: {sample_img}\n"
+            f"Sample missing mask : {sample_mask}\n"
+            f"Please regenerate the manifest on this machine using Phase1_nnUNet/data_ingestion.py"
+        )
 
     generator = torch.Generator().manual_seed(seed)
     indices = torch.randperm(len(data_dicts), generator=generator).tolist()
