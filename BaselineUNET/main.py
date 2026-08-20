@@ -286,6 +286,8 @@ def main() -> None:
 
     device = select_device(args.device)
     print(f"Using device: {device}")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
 
     # Discover and prepare dataset
     if args.manifest:
