@@ -135,7 +135,13 @@ def parse_args() -> argparse.Namespace:
         "--cache_rate",
         type=float,
         default=0.0,
-        help="MONAI CacheDataset cache rate (0.0 to 1.0; use 0.0 for 80GB dataset unless RAM is >128GB)",
+        help="In-memory cache rate (keep 0.0 for 80GB dataset to prevent RAM exhaustion)",
+    )
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default="",
+        help="Optional disk directory for PersistentDataset caching (uses 0 RAM, fast NVMe caching)",
     )
     parser.add_argument(
         "--device",
@@ -336,6 +342,7 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         cache_rate=args.cache_rate,
+        cache_dir=args.cache_dir if args.cache_dir else None,
     )
 
     # Initialize Model, Loss, Optimizer

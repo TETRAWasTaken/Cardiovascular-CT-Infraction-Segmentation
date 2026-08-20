@@ -232,14 +232,19 @@ def build_dataloaders(
     patch_size: Tuple[int, int, int] = (96, 96, 96),
     num_samples: int = 4,
     batch_size: int = 2,
-    num_workers: int = 2,
+    num_workers: int = 4,
     cache_rate: float = 0.0,
+    cache_dir: Optional[str | Path] = None,
     hu_min: float = -100.0,
     hu_max: float = 700.0,
 ) -> Tuple[DataLoader, DataLoader]:
     """
     Create PyTorch / MONAI DataLoaders for training and validation.
+    Supports on-the-fly streaming Dataset (RAM < 2GB), PersistentDataset (disk cache),
+    or in-memory CacheDataset.
     """
+    from monai.data import PersistentDataset
+
     train_transforms = get_train_transforms(
         patch_size=patch_size,
         num_samples=num_samples,
@@ -251,20 +256,36 @@ def build_dataloaders(
         hu_max=hu_max,
     )
 
-    if cache_rate > 0.0:
+    if cache_dir:
+        cache_path = Path(cache_dir).resolve()
+        cache_path.mkdir(parents=True, exist_ok=True)
+        print(f"Using PersistentDataset (disk cache at {cache_path})")
+        train_ds = PersistentDataset(
+            data=train_files,
+            transform=train_transforms,
+            cache_dir=str(cache_path / "train"),
+        )
+        val_ds = PersistentDataset(
+            data=val_files,
+            transform=val_transforms,
+            cache_dir=str(cache_path / "val"),
+        )
+    elif cache_rate > 0.0:
+        print(f"Warning: CacheDataset with cache_rate={cache_rate} preloads uncompressed arrays into RAM.")
         train_ds = CacheDataset(
             data=train_files,
             transform=train_transforms,
             cache_rate=cache_rate,
-            num_workers=num_workers,
+            num_workers=min(num_workers, 2),
         )
         val_ds = CacheDataset(
             data=val_files,
             transform=val_transforms,
             cache_rate=cache_rate,
-            num_workers=num_workers,
+            num_workers=min(num_workers, 2),
         )
     else:
+        # Standard memory-safe on-demand streaming
         train_ds = Dataset(data=train_files, transform=train_transforms)
         val_ds = Dataset(data=val_files, transform=val_transforms)
 
@@ -281,7 +302,7 @@ def build_dataloaders(
         val_ds,
         batch_size=1,
         shuffle=False,
-        num_workers=num_workers,
+        num_workers=min(num_workers, 2),
         pin_memory=torch.cuda.is_available(),
     )
 

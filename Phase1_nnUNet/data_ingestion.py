@@ -125,15 +125,17 @@ def inspect_image(path: Path) -> dict:
     Read basic 3D image metadata without loading the complete volume into memory.
     """
     try:
-        image = sitk.ReadImage(str(path))
+        reader = sitk.ImageFileReader()
+        reader.SetFileName(str(path))
+        reader.ReadImageInformation()
 
         return {
             "status": "ok",
-            "dimensions": "x".join(map(str, image.GetSize())),
-            "spacing": "x".join(f"{x:.6g}" for x in image.GetSpacing()),
-            "origin": "x".join(f"{x:.6g}" for x in image.GetOrigin()),
-            "direction": ",".join(f"{x:.6g}" for x in image.GetDirection()),
-            "component_type": image.GetPixelIDTypeAsString(),
+            "dimensions": "x".join(map(str, reader.GetSize())),
+            "spacing": "x".join(f"{x:.6g}" for x in reader.GetSpacing()),
+            "origin": "x".join(f"{x:.6g}" for x in reader.GetOrigin()),
+            "direction": ",".join(f"{x:.6g}" for x in reader.GetDirection()),
+            "component_type": reader.GetPixelIDValueAsString(),
         }
 
     except Exception as exc:
