@@ -115,17 +115,16 @@ if __name__ == "__main__":
         print("=" * 75 + "\n")
         sys.exit(1)
 
-    # GPU Sharding: Trains 2 models simultaneously!
-    # - If multiple physical GPUs exist (e.g. 2 GPUs), automatically assigns ['cuda:0', 'cuda:1']
-    # - If single GPU exists, shards VRAM dynamically (e.g. 48% each) on ['cuda:0', 'cuda:0']
-    # - You can also explicitly specify: devices=["cuda:0", "cuda:1"]
+    # Sequential Training Mode:
+    # Runs 1 trial at a time, giving each model 100% of the GPU VRAM.
+    # Completely avoids 'CUDA device busy' errors in EXCLUSIVE_PROCESS compute mode.
     tuning_results = run_hyperparameter_tuning(
         base_config=base_config,
         param_grid=param_grid,
         search_type="grid",           # "grid" or "random"
-        max_parallel_jobs=2,          # Simultaneously train 2 models!
-        devices=None,                 # Auto-detects GPUs or set e.g. ["cuda:0", "cuda:1"]
-        gpu_memory_fraction=0.48,     # VRAM limit if sharding a single GPU
+        max_parallel_jobs=1,          # 1 = Sequential training (1 model at a time)
+        devices=None,                 # Auto-detects primary GPU (cuda:0)
+        gpu_memory_fraction=1.0,      # Full GPU VRAM available per trial
         # n_trials=6,                 # Uncomment to cap total trials
         seed=42,
     )

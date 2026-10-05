@@ -565,7 +565,18 @@ def run_hyperparameter_tuning(
 
         except Exception as e:
             trial_duration = round(time.time() - trial_start_time, 2)
-            print(f"\n❌ [ERROR] {trial_id} on {slot_label} failed: {e}")
+            err_str = str(e)
+            print(f"\n❌ [ERROR] {trial_id} on {slot_label} failed: {err_str}")
+            if "busy or unavailable" in err_str.lower() or "device busy" in err_str.lower():
+                print("\n💡 [DIAGNOSIS] CUDA device is reported busy or unavailable!")
+                print("   Your GPU is configured in 'EXCLUSIVE_PROCESS' compute mode, which prevents")
+                print("   multiple processes from binding to the same physical GPU simultaneously.")
+                print("   Quick Solutions:")
+                print("   1. Set max_parallel_jobs=1 in Transformer/run.py to train trials sequentially.")
+                print("   2. Or if you have sudo: sudo nvidia-smi -c DEFAULT to allow concurrent access.")
+                print("   3. Or if your workstation has multiple GPUs, assign distinct GPUs via devices=['cuda:0', 'cuda:1']")
+                print("   4. Or start the NVIDIA MPS daemon to multiplex the GPU: nvidia-cuda-mps-control -d\n")
+
             trial_record = {
                 "trial_id": trial_id,
                 "device": slot_label,
@@ -574,7 +585,7 @@ def run_hyperparameter_tuning(
                 "best_hd95": float("nan"),
                 "best_epoch": 0,
                 "duration_sec": trial_duration,
-                "error": str(e),
+                "error": err_str,
                 "trial_output_dir": str(trial_output_dir),
                 **params,
             }
