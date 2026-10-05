@@ -232,7 +232,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for determinism")
 
-    # Checkpoint & Resume
+    parser.add_argument(
+        "--gpu_memory_fraction",
+        type=float,
+        default=1.0,
+        help="Fraction of GPU VRAM allocated to this process (e.g. 0.48 to shard 1 GPU between 2 models)",
+    )
     parser.add_argument(
         "--resume",
         type=str,
@@ -487,6 +492,7 @@ def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
     cfg.setdefault("seed", 42)
     cfg.setdefault("resume", "")
     cfg.setdefault("save_interval", 0)
+    cfg.setdefault("gpu_memory_fraction", 1.0)
 
     # Normalize spatial_size to tuple
     if isinstance(cfg["spatial_size"], (list, tuple)):
@@ -525,10 +531,17 @@ def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
     print(f"[ENGINE] Optimization  : {cfg['optimizer']} (lr={cfg['lr']}, weight_decay={cfg['weight_decay']})")
     print(f"========================================================")
 
-    if device.type == "cuda":
+    if device.type == "cuda" and torch.cuda.is_available():
+        gpu_id = device.index if device.index is not None else 0
+        torch.cuda.set_device(gpu_id)
+        mem_frac = float(cfg.get("gpu_memory_fraction", 1.0))
+        if 0.0 < mem_frac < 1.0:
+            torch.cuda.set_per_process_memory_fraction(mem_frac, gpu_id)
+            print(f"[SHARDING] Constrained process VRAM to {mem_frac * 100:.1f}% on cuda:{gpu_id}")
+
         torch.backends.cudnn.benchmark = True
-        print(f"[CUDA] Device Name   : {torch.cuda.get_device_name(device)}")
-        print(f"[CUDA] Memory Total  : {torch.cuda.get_device_properties(device).total_memory / (1024**3):.2f} GB")
+        print(f"[CUDA] Device Name   : {torch.cuda.get_device_name(gpu_id)}")
+        print(f"[CUDA] Memory Total  : {torch.cuda.get_device_properties(gpu_id).total_memory / (1024**3):.2f} GB")
 
     # Data Preparation
     if cfg["sanity_check"] or not cfg["data_dir"]:
