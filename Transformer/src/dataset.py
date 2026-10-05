@@ -23,6 +23,7 @@ from monai.transforms import (
     RandCropByPosNegLabeld,
     ScaleIntensityRanged,
     Spacingd,
+    SpatialPadd,
 )
 
 
@@ -43,9 +44,12 @@ def get_transforms(
       3. Orientationd(keys=["image", "label"], axcodes="RAS")
       4. Spacingd(keys=["image", "label"], pixdim=(1.0, 1.0, 1.0), mode=("bilinear", "nearest"))
       5. ScaleIntensityRanged(keys=["image"], a_min=-100, a_max=500, b_min=0.0, b_max=1.0, clip=True)
-      6. RandCropByPosNegLabeld(spatial_size=(96, 96, 96), pos=1, neg=1, num_samples=4) [train mode only]
+      6. SpatialPadd(keys=["image", "label"], spatial_size=spatial_size, mode="constant")
+         [Guarantees any scan dimension smaller than spatial_size is padded to avoid crop ROI errors]
+      7. RandCropByPosNegLabeld(spatial_size=(96, 96, 96), pos=1, neg=1, num_samples=4) [train mode only]
     """
     keys = ["image", "label"]
+    target_spatial_size = tuple(int(s) for s in spatial_size)
 
     base_transforms = [
         LoadImaged(keys=keys, image_only=False),
@@ -64,6 +68,11 @@ def get_transforms(
             b_max=b_max,
             clip=True,
         ),
+        SpatialPadd(
+            keys=keys,
+            spatial_size=target_spatial_size,
+            mode="constant",
+        ),
     ]
 
     if mode == "train":
@@ -71,7 +80,7 @@ def get_transforms(
             RandCropByPosNegLabeld(
                 keys=keys,
                 label_key="label",
-                spatial_size=spatial_size,
+                spatial_size=target_spatial_size,
                 pos=1,
                 neg=1,
                 num_samples=num_samples,

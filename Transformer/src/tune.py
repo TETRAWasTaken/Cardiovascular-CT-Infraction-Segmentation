@@ -505,6 +505,31 @@ def run_hyperparameter_tuning(
     best_overall_trial: dict[str, Any] | None = None
     best_checkpoint_src: Path | None = None
 
+    # Pre-Flight Pipeline Test Run to confirm end-to-end functionality before dispatching trials
+    if base_config.get("run_preflight", True) and combinations:
+        preflight_device, preflight_shard = device_pool_list[0]
+        print(f"[TUNER] Running pre-flight pipeline test run on {preflight_device} ({preflight_shard})...")
+        preflight_cfg = base_config.copy()
+        preflight_cfg.update(combinations[0])
+        preflight_dir = trials_dir / "preflight_test"
+        preflight_dir.mkdir(parents=True, exist_ok=True)
+        preflight_cfg["output_dir"] = str(preflight_dir)
+        preflight_cfg["trial_id"] = "preflight_test"
+        preflight_cfg["is_preflight_only"] = True
+        try:
+            execute_trial_process(
+                trial_cfg=preflight_cfg,
+                device_str=preflight_device,
+                virtual_shard_name=preflight_shard,
+                gpu_memory_fraction=effective_mem_fraction,
+            )
+            print(f"[TUNER] ✅ Pre-flight pipeline test run PASSED! Environment, data, and model confirmed working.\n")
+        except Exception as e:
+            print(f"\n❌ [TUNER ERROR] Pre-flight pipeline test run failed on {preflight_device}: {e}")
+            raise e
+        finally:
+            shutil.rmtree(preflight_dir, ignore_errors=True)
+
     start_total_time = time.time()
 
     def _run_single_trial(idx: int, params: dict[str, Any]) -> dict[str, Any]:

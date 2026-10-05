@@ -184,8 +184,30 @@ def test_hyperparameter_tuning_pipeline():
         print(">>> Test 3 Passed: Hyperparameter tuning executed across parameter sets and saved summary reports.")
 
 
+def test_preflight_verification_test_run():
+    print("\n--- [TEST 4] Pre-Flight Pipeline Verification Test Run ---")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_dir = Path(temp_dir) / "preflight_output"
+        config = {
+            "output_dir": str(output_dir),
+            "sanity_check": True,
+            "feature_size": 12,
+            "spatial_size": (96, 96, 96),
+            "num_samples": 1,
+            "device": "cpu",
+            "num_workers": 0,
+            "amp": False,
+            "run_preflight": True,
+            "is_preflight_only": True,
+        }
+        result = run_training(config)
+        assert result.get("status") == "PREFLIGHT_PASSED", f"Expected PREFLIGHT_PASSED, got {result.get('status')}"
+        print(">>> Test 4 Passed: Pre-flight smoke test verified pipeline and exited cleanly.")
+
+
 if __name__ == "__main__":
     test_train_pipeline_and_artifacts()
     test_resume_training()
     test_hyperparameter_tuning_pipeline()
+    test_preflight_verification_test_run()
     print("\n🎉 ALL TESTS PASSED SUCCESSFULLY!")

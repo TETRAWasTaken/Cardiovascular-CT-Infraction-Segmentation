@@ -67,6 +67,9 @@ base_config = {
     "spatial_size": (96, 96, 96),
     "num_samples": 2,                 # 2 crops per volume (prevents OOM on 16GB GPUs)
     "use_checkpoint": True,           # Gradient checkpointing to save VRAM
+
+    # Pre-Flight Pipeline Verification
+    "run_preflight": True,            # Verifies pipeline end-to-end with 1 step prior to full training
 }
 
 # Proper AdamW Hyperparameter Grid

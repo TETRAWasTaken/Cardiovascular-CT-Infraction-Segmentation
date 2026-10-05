@@ -250,6 +250,16 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Interval of epochs to save periodic checkpoints (0 = only best & latest)",
     )
+    parser.add_argument(
+        "--no_preflight",
+        action="store_true",
+        help="Skip the end-to-end pre-flight verification test run",
+    )
+    parser.add_argument(
+        "--preflight_only",
+        action="store_true",
+        help="Run only the end-to-end pre-flight verification test run and exit",
+    )
 
     return parser.parse_args()
 
@@ -278,6 +288,10 @@ def train_one_epoch(
     for batch_idx, batch in enumerate(pbar):
         images = batch["image"].to(device, non_blocking=(device.type == "cuda"))
         labels = batch["label"].to(device, non_blocking=(device.type == "cuda"))
+        if images.ndim == 6:
+            b, s, c, d, h, w = images.shape
+            images = images.view(b * s, c, d, h, w)
+            labels = labels.view(b * s, c, d, h, w)
 
         if use_amp and device.type == "cuda" and scaler is not None:
             # Modern PyTorch 2.x API with fallback
@@ -346,6 +360,10 @@ def validate(
         for batch in tqdm(val_loader, desc="Validation", leave=False):
             val_images = batch["image"].to(device, non_blocking=(device.type == "cuda"))
             val_labels = batch["label"].to(device, non_blocking=(device.type == "cuda"))
+            if val_images.ndim == 6:
+                b, s, c, d, h, w = val_images.shape
+                val_images = val_images.view(b * s, c, d, h, w)
+                val_labels = val_labels.view(b * s, c, d, h, w)
 
             if use_amp and device.type == "cuda":
                 with torch.cuda.amp.autocast(dtype=torch.float16):
@@ -471,6 +489,155 @@ def save_csv_log(csv_path: Path, history: list[dict[str, Any]]) -> None:
         writer.writerows(history)
 
 
+def run_preflight_test(
+    model: nn.Module,
+    train_loader: Any,
+    val_loader: Any,
+    criterion: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: Any,
+    device: torch.device,
+    use_amp: bool,
+    dice_metric: DiceMetric,
+    hd95_metric: HausdorffDistanceMetric,
+    post_pred: Compose,
+    post_label: Compose,
+    roi_size: tuple[int, int, int] = (96, 96, 96),
+    sw_batch_size: int = 1,
+    overlap: float = 0.25,
+) -> None:
+    """
+    Executes a comprehensive pre-flight verification test run before full training starts:
+      1. Fetches a training batch and verifies data loading, Spacingd, SpatialPadd, and RandCropByPosNegLabeld.
+      2. Validates GPU memory transfer, collation, and input tensor shape.
+      3. Performs forward pass, loss calculation (DiceFocalLoss), and backward pass (with AMP GradScaler if enabled).
+      4. Fetches a validation batch and executes full-volume sliding-window inference and metric calculation.
+      5. Resets model parameters and optimizer states to pristine initial conditions.
+    """
+    import copy
+
+    print("\n" + "=" * 78)
+    print("🔍 [PRE-FLIGHT TEST] Initiating end-to-end pipeline verification test run...")
+    print("=" * 78)
+
+    # 1. Checkpoint initial states so pre-flight test does not alter initial model weights or optimizer momentum
+    saved_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+    saved_opt_state = copy.deepcopy(optimizer.state_dict())
+
+    # 2. Test Training Batch & Step
+    print("[PRE-FLIGHT TEST] 1/3 Testing training data loader, transforms & forward/backward step...")
+    train_iter = iter(train_loader)
+    try:
+        batch = next(train_iter)
+    finally:
+        del train_iter
+
+    images = batch["image"].to(device, non_blocking=(device.type == "cuda"))
+    labels = batch["label"].to(device, non_blocking=(device.type == "cuda"))
+    if images.ndim == 6:
+        b, s, c, d, h, w = images.shape
+        images = images.view(b * s, c, d, h, w)
+        labels = labels.view(b * s, c, d, h, w)
+
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+
+    if use_amp and device.type == "cuda" and scaler is not None:
+        try:
+            autocast_ctx = torch.amp.autocast("cuda", dtype=torch.float16)
+        except (AttributeError, TypeError):
+            autocast_ctx = torch.cuda.amp.autocast(dtype=torch.float16)
+
+        with autocast_ctx:
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
+    else:
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+
+    print(
+        f"[PRE-FLIGHT TEST]     -> Train batch loaded: image={tuple(images.shape)}, "
+        f"label={tuple(labels.shape)}, loss={loss.item():.4f}"
+    )
+
+    # 3. Test Validation Batch & Sliding-Window Inference
+    print("[PRE-FLIGHT TEST] 2/3 Testing validation loader & full-volume sliding-window inference...")
+    val_iter = iter(val_loader)
+    try:
+        val_batch = next(val_iter)
+    finally:
+        del val_iter
+
+    val_images = val_batch["image"].to(device, non_blocking=(device.type == "cuda"))
+    val_labels = val_batch["label"].to(device, non_blocking=(device.type == "cuda"))
+    if val_images.ndim == 6:
+        b, s, c, d, h, w = val_images.shape
+        val_images = val_images.view(b * s, c, d, h, w)
+        val_labels = val_labels.view(b * s, c, d, h, w)
+
+    model.eval()
+    with torch.no_grad():
+        if use_amp and device.type == "cuda":
+            try:
+                autocast_ctx = torch.amp.autocast("cuda", dtype=torch.float16)
+            except (AttributeError, TypeError):
+                autocast_ctx = torch.cuda.amp.autocast(dtype=torch.float16)
+
+            with autocast_ctx:
+                val_outputs = sliding_window_inference(
+                    inputs=val_images,
+                    roi_size=roi_size,
+                    sw_batch_size=sw_batch_size,
+                    predictor=model,
+                    overlap=overlap,
+                    mode="gaussian",
+                )
+        else:
+            val_outputs = sliding_window_inference(
+                inputs=val_images,
+                roi_size=roi_size,
+                sw_batch_size=sw_batch_size,
+                predictor=model,
+                overlap=overlap,
+                mode="gaussian",
+            )
+
+        val_outputs_discrete = [post_pred(i) for i in val_outputs]
+        val_labels_discrete = [post_label(i) for i in val_labels]
+        dice_metric.reset()
+        dice_metric(y_pred=val_outputs_discrete, y=val_labels_discrete)
+        try:
+            sample_dice = float(dice_metric.aggregate().item())
+        except Exception:
+            sample_dice = 0.0
+        dice_metric.reset()
+
+    print(
+        f"[PRE-FLIGHT TEST]     -> Val volume loaded: image={tuple(val_images.shape)}, "
+        f"sliding_window_output={tuple(val_outputs.shape)}, sample_dice={sample_dice:.4f}"
+    )
+
+    # 4. Clean State Restoration
+    print("[PRE-FLIGHT TEST] 3/3 Restoring model parameters & optimizer states to initial state...")
+    model.load_state_dict({k: v.to(device) for k, v in saved_model_state.items()})
+    optimizer.load_state_dict(saved_opt_state)
+    optimizer.zero_grad(set_to_none=True)
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    print("=" * 78)
+    print("✅ [PRE-FLIGHT TEST] All pipeline checks PASSED! Pipeline is fully verified end-to-end.")
+    print("=" * 78 + "\n")
+
+
 def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
     """
     Main training execution function.
@@ -515,6 +682,8 @@ def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
     cfg.setdefault("resume", "")
     cfg.setdefault("save_interval", 0)
     cfg.setdefault("gpu_memory_fraction", 1.0)
+    cfg.setdefault("run_preflight", not cfg.get("no_preflight", False))
+    cfg.setdefault("is_preflight_only", cfg.get("preflight_only", False))
 
     # Normalize spatial_size to tuple
     if isinstance(cfg["spatial_size"], (list, tuple)):
@@ -633,7 +802,10 @@ def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
         spatial_size=cfg["spatial_size"],
         num_samples=int(cfg["num_samples"]),
     )
-    val_transforms = get_transforms(mode="val")
+    val_transforms = get_transforms(
+        mode="val",
+        spatial_size=cfg["spatial_size"],
+    )
 
     num_workers = int(cfg["num_workers"]) if device.type == "cuda" else 0
     train_ds = build_dataset(
@@ -739,6 +911,38 @@ def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
 
     if device.type == "cuda":
         torch.cuda.empty_cache()
+
+    # Pre-Flight Pipeline Verification Test Run
+    if bool(cfg.get("run_preflight", True)):
+        run_preflight_test(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            scaler=scaler,
+            device=device,
+            use_amp=use_amp,
+            dice_metric=dice_metric,
+            hd95_metric=hd95_metric,
+            post_pred=post_pred,
+            post_label=post_label,
+            roi_size=cfg["spatial_size"],
+            sw_batch_size=int(cfg["sw_batch_size"]),
+            overlap=float(cfg["overlap"]),
+        )
+
+    if cfg.get("is_preflight_only", False):
+        print("[PRE-FLIGHT ONLY] Pre-flight verification completed successfully. Exiting without training.")
+        return {
+            "status": "PREFLIGHT_PASSED",
+            "best_dice": 0.0,
+            "best_hd95": float("nan"),
+            "best_epoch": 0,
+            "summary": {"status": "PREFLIGHT_PASSED"},
+            "output_dir": str(output_dir),
+            "best_checkpoint": "",
+        }
 
     grad_accum_steps = max(1, int(cfg.get("gradient_accumulation_steps", 1)))
     print(f"[TRAIN] Beginning training for {total_epochs} epochs (grad_accum_steps={grad_accum_steps})...")

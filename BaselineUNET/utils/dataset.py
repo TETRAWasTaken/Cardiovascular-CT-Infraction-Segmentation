@@ -25,6 +25,7 @@ from monai.transforms import (
     EnsureChannelFirstd,
     Orientationd,
     ScaleIntensityRanged,
+    SpatialPadd,
     RandCropByPosNegLabeld,
     RandFlipd,
     RandRotate90d,
@@ -206,6 +207,11 @@ def get_train_transforms(
                 b_max=1.0,
                 clip=True,
             ),
+            SpatialPadd(
+                keys=["image", "label"],
+                spatial_size=patch_size,
+                mode="constant",
+            ),
             RandCropByPosNegLabeld(
                 keys=["image", "label"],
                 label_key="label",
@@ -227,6 +233,7 @@ def get_train_transforms(
 
 
 def get_val_transforms(
+    patch_size: Tuple[int, int, int] = (96, 96, 96),
     hu_min: float = -100.0,
     hu_max: float = 700.0,
 ) -> Compose:
@@ -245,6 +252,11 @@ def get_val_transforms(
                 b_min=0.0,
                 b_max=1.0,
                 clip=True,
+            ),
+            SpatialPadd(
+                keys=["image", "label"],
+                spatial_size=patch_size,
+                mode="constant",
             ),
             EnsureTyped(keys=["image", "label"], track_meta=False),
         ]

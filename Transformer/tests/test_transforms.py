@@ -131,5 +131,49 @@ def test_slice_spatial_alignment_and_artifact(temp_nifti_data):
     print(f"\n[ARTIFACT CREATED] {out_png}")
 
 
+def test_transforms_with_smaller_volume_dimensions():
+    """
+    Regression Test for ROI crop error:
+    Validates that volumes with spatial dimensions smaller than spatial_size
+    (e.g., shape (164, 164, 84) with spatial_size (96, 96, 96)) are automatically
+    padded via SpatialPadd without raising ValueError during random cropping.
+    """
+    with tempfile.TemporaryDirectory(prefix="test_small_volume_") as temp_dir:
+        # Create a synthetic volume with depth=84 (< 96)
+        case = generate_synthetic_nifti(temp_dir, prefix="small_case_001", shape=(164, 164, 84))
+
+        # Test Train Pipeline (Crop 96x96x96 from 164x164x84)
+        train_transforms = get_transforms(mode="train", spatial_size=(96, 96, 96), num_samples=1)
+        train_ds = build_dataset([case], transforms=train_transforms, use_cache=False)
+        train_loader = build_dataloader(train_ds, batch_size=1, shuffle=False, num_workers=0)
+
+        batch = next(iter(train_loader))
+        train_img = batch["image"]
+        train_lbl = batch["label"]
+
+        if train_img.ndim == 6:
+            b, s, c, d, h, w = train_img.shape
+            train_img = train_img.view(b * s, c, d, h, w)
+            train_lbl = train_lbl.view(b * s, c, d, h, w)
+
+        assert train_img.shape[-3:] == (96, 96, 96), f"Expected (96, 96, 96), got {train_img.shape[-3:]}"
+        assert train_lbl.shape[-3:] == (96, 96, 96), f"Expected (96, 96, 96), got {train_lbl.shape[-3:]}"
+
+        # Test Val Pipeline (Whole volume padded to at least 96 in each dimension)
+        val_transforms = get_transforms(mode="val", spatial_size=(96, 96, 96))
+        val_ds = build_dataset([case], transforms=val_transforms, use_cache=False)
+        val_loader = build_dataloader(val_ds, batch_size=1, shuffle=False, num_workers=0)
+
+        val_batch = next(iter(val_loader))
+        val_img = val_batch["image"]
+        val_lbl = val_batch["label"]
+
+        # Depth 84 was padded to 96; 164 remained 164
+        assert val_img.shape[-1] >= 96, f"Expected depth >= 96, got {val_img.shape[-1]}"
+        assert val_lbl.shape[-1] >= 96, f"Expected label depth >= 96, got {val_lbl.shape[-1]}"
+        assert val_img.shape == val_lbl.shape, "Val image and label shapes must match"
+        print(">>> Small-volume padding regression test passed successfully.")
+
+
 if __name__ == "__main__":
     pytest.main(["-v", str(Path(__file__))])
