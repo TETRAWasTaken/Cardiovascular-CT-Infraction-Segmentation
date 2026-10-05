@@ -258,40 +258,62 @@ def train_one_epoch(
     model: nn.Module,
     train_loader: Any,
     optimizer: torch.optim.Optimizer,
-    scaler: torch.cuda.amp.GradScaler | None,
+    scaler: Any,
     criterion: nn.Module,
     device: torch.device,
     use_amp: bool,
+    grad_accum_steps: int = 1,
 ) -> float:
-    """Runs a single training epoch with optional Automatic Mixed Precision (AMP)."""
+    """Runs a single training epoch with optional AMP and gradient accumulation."""
     model.train()
     running_loss = 0.0
     step_count = 0
 
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
     pbar = tqdm(train_loader, desc="Training", leave=False)
-    for batch in pbar:
+    optimizer.zero_grad(set_to_none=True)
+
+    for batch_idx, batch in enumerate(pbar):
         images = batch["image"].to(device, non_blocking=(device.type == "cuda"))
         labels = batch["label"].to(device, non_blocking=(device.type == "cuda"))
 
-        optimizer.zero_grad(set_to_none=True)
-
         if use_amp and device.type == "cuda" and scaler is not None:
-            with torch.cuda.amp.autocast(dtype=torch.float16):
+            # Modern PyTorch 2.x API with fallback
+            try:
+                autocast_ctx = torch.amp.autocast("cuda", dtype=torch.float16)
+            except (AttributeError, TypeError):
+                autocast_ctx = torch.cuda.amp.autocast(dtype=torch.float16)
+
+            with autocast_ctx:
                 outputs = model(images)
                 loss = criterion(outputs, labels)
+                if grad_accum_steps > 1:
+                    loss = loss / grad_accum_steps
 
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+
+            if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(train_loader):
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
         else:
             outputs = model(images)
             loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            if grad_accum_steps > 1:
+                loss = loss / grad_accum_steps
 
-        running_loss += float(loss.item())
+            loss.backward()
+
+            if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(train_loader):
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
+        unscaled_loss = float(loss.item() * (grad_accum_steps if grad_accum_steps > 1 else 1.0))
+        running_loss += unscaled_loss
         step_count += 1
-        pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+        pbar.set_postfix({"loss": f"{unscaled_loss:.4f}"})
 
     return running_loss / max(step_count, 1)
 
@@ -670,7 +692,13 @@ def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
 
     # Mixed Precision Scaler
     use_amp = bool(cfg["amp"]) and (device.type == "cuda")
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    if use_amp:
+        try:
+            scaler = torch.amp.GradScaler("cuda")
+        except (AttributeError, TypeError):
+            scaler = torch.cuda.amp.GradScaler()
+    else:
+        scaler = None
 
     # Metrics & Post-processing
     dice_metric = DiceMetric(include_background=False, reduction="mean")
@@ -709,7 +737,11 @@ def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
                 pass
         print(f"[RESUME] Resuming from epoch {start_epoch} with prior best Dice: {best_dice:.4f}")
 
-    print(f"[TRAIN] Beginning training for {total_epochs} epochs...")
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    grad_accum_steps = max(1, int(cfg.get("gradient_accumulation_steps", 1)))
+    print(f"[TRAIN] Beginning training for {total_epochs} epochs (grad_accum_steps={grad_accum_steps})...")
     start_time = time.time()
     epochs_no_improve = 0
     patience = int(cfg["early_stopping_patience"])
@@ -724,6 +756,7 @@ def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
             criterion=criterion,
             device=device,
             use_amp=use_amp,
+            grad_accum_steps=grad_accum_steps,
         )
 
         val_dice, val_hd95, val_loss = float("nan"), float("nan"), float("nan")

@@ -57,15 +57,16 @@ base_config = {
     # Optimization: Locked to AdamW
     "optimizer": "adamw",
     "scheduler": "cosine",        # CosineAnnealingLR over the trial epochs
-    "epochs": 50,                 # Epochs per trial
-    "batch_size": 2,              # Patch batch size (increase to 4 if 24GB+ VRAM)
+    "epochs": 50,                     # Epochs per trial
+    "batch_size": 1,                  # 1 volume per batch (fits safely within 16GB VRAM)
+    "gradient_accumulation_steps": 2, # Accumulate 2 steps -> effective batch size of 4 patches
     "val_interval": 1,
     "seed": 42,
 
-    # Patch size & sampling
+    # Patch size & sampling (2 crops * 1 volume = 2 patches of 96^3 per step -> ~5 GB VRAM)
     "spatial_size": (96, 96, 96),
-    "num_samples": 4,
-    "use_checkpoint": True,       # Gradient checkpointing to save VRAM
+    "num_samples": 2,                 # 2 crops per volume (prevents OOM on 16GB GPUs)
+    "use_checkpoint": True,           # Gradient checkpointing to save VRAM
 }
 
 # Proper AdamW Hyperparameter Grid
