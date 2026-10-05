@@ -1,5 +1,19 @@
+import sys
 from pathlib import Path
-from Transformer.src.tune import run_hyperparameter_tuning
+
+# Set up project home directory in sys.path so 'Transformer' can be located
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from Transformer.src.tune import run_hyperparameter_tuning
+except ModuleNotFoundError:
+    TRANSFORMER_DIR = Path(__file__).resolve().parent
+    if str(TRANSFORMER_DIR) not in sys.path:
+        sys.path.insert(0, str(TRANSFORMER_DIR))
+    from src.tune import run_hyperparameter_tuning
+
 
 # Base configuration applied to all trials
 base_config = {

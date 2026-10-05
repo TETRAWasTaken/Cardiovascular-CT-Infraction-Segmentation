@@ -7,12 +7,21 @@ Verification Target:
   Loss: DiceFocalLoss calculation & backward gradient flow
 """
 
-from __future__ import annotations
+import sys
+from pathlib import Path
 
 import pytest
 import torch
 
-from Transformer.src.model import build_model, get_loss_function
+# Ensure repo root is in sys.path
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from Transformer.src.model import build_model, get_loss_function
+except ModuleNotFoundError:
+    from src.model import build_model, get_loss_function
 
 
 @pytest.mark.skipif(
