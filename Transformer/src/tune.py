@@ -52,6 +52,24 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 
+def sanitize_mps_environment() -> None:
+    """
+    Guards against NVIDIA MPS Error 805 ('MPS client failed to connect to the MPS control daemon').
+    If CUDA_MPS_PIPE_DIRECTORY is set in environment but the MPS daemon is not actually running,
+    unsetting it prevents CUDA calls from failing and falling back to CPU.
+    """
+    if "CUDA_MPS_PIPE_DIRECTORY" in os.environ:
+        mps_dir = Path(os.environ["CUDA_MPS_PIPE_DIRECTORY"])
+        control_pipe = mps_dir / "control"
+        if not mps_dir.exists() or not control_pipe.exists():
+            print(f"[NOTICE] CUDA_MPS_PIPE_DIRECTORY='{mps_dir}' was set, but no active MPS control daemon was found.")
+            print("[NOTICE] Automatically unsetting CUDA_MPS_PIPE_DIRECTORY so CUDA can access GPU(s) directly.")
+            os.environ.pop("CUDA_MPS_PIPE_DIRECTORY", None)
+            os.environ.pop("CUDA_MPS_LOG_DIRECTORY", None)
+
+
+sanitize_mps_environment()
+
 # Ensure parent and repo root are in sys.path
 CURRENT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = CURRENT_DIR.parent.parent
@@ -260,6 +278,7 @@ def resolve_device_pool(
     if user_devices:
         return [(d, f"vGPU-{i}" if user_devices.count(d) > 1 else f"GPU-{i}") for i, d in enumerate(user_devices)]
 
+    sanitize_mps_environment()
     cuda_available = torch.cuda.is_available()
     num_cuda_gpus = torch.cuda.device_count() if cuda_available else 0
 
@@ -285,6 +304,7 @@ def _isolated_worker_target(
     """
     Executed inside a standalone spawned process for maximum CUDA & VRAM isolation.
     """
+    sanitize_mps_environment()
     # Prevent CUDA caching allocator fragmentation when multiple models share one GPU
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -331,14 +351,18 @@ def execute_trial_process(
     proc.start()
     proc.join()
 
-    if not result_q.empty():
-        data = result_q.get()
-        if data["success"]:
-            return data["result"]
+    try:
+        if not result_q.empty():
+            data = result_q.get()
+            if data["success"]:
+                return data["result"]
+            else:
+                raise RuntimeError(data["error"])
         else:
-            raise RuntimeError(data["error"])
-    else:
-        raise RuntimeError(f"Trial process for {trial_cfg.get('trial_id')} exited unexpectedly (code: {proc.exitcode})")
+            raise RuntimeError(f"Trial process for {trial_cfg.get('trial_id')} exited unexpectedly (code: {proc.exitcode})")
+    finally:
+        result_q.close()
+        result_q.join_thread()
 
 
 def print_leaderboard(trials_summary: list[dict[str, Any]], tuned_keys: list[str]) -> None:

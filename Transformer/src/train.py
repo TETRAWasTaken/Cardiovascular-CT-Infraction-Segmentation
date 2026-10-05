@@ -553,11 +553,49 @@ def run_training(config: dict[str, Any] | argparse.Namespace) -> dict[str, Any]:
         val_files = [case_2]
         total_epochs = 2 if cfg["sanity_check"] else int(cfg["epochs"])
     else:
-        data_path = Path(cfg["data_dir"])
-        images = sorted(list(data_path.glob("*_img.nii*")) + list(data_path.glob("*_image.nii*")))
-        labels = sorted(list(data_path.glob("*_label.nii*")) + list(data_path.glob("*_seg.nii*")))
+        data_path = Path(cfg["data_dir"]).expanduser().resolve()
+        if not data_path.exists():
+            raise FileNotFoundError(
+                f"Dataset directory does not exist: {data_path}. "
+                "Please configure 'data_dir' in run.py with the valid path to your dataset."
+            )
+
+        # Support both direct glob and recursive rglob, and various common naming conventions
+        image_patterns = ["*_img.nii*", "*_image.nii*", "*.img.nii*", "*.image.nii*"]
+        images: list[Path] = []
+        for pat in image_patterns:
+            images.extend(data_path.glob(pat))
         if not images:
-            raise FileNotFoundError(f"No image files found in {data_path} matching '*_img.nii*' or '*_image.nii*'")
+            for pat in image_patterns:
+                images.extend(data_path.rglob(pat))
+        if not images:
+            # Fallback to general .nii/.nii.gz excluding obvious masks/labels
+            images = [
+                p for p in data_path.rglob("*.nii*")
+                if not any(k in p.name.lower() for k in ["label", "seg", "mask"])
+                and not p.name.startswith("._")
+            ]
+        images = sorted(list(set(images)))
+
+        label_patterns = ["*_label.nii*", "*_seg.nii*", "*.label.nii*", "*.seg.nii*", "*_mask.nii*", "*.mask.nii*"]
+        labels: list[Path] = []
+        for pat in label_patterns:
+            labels.extend(data_path.glob(pat))
+        if not labels:
+            for pat in label_patterns:
+                labels.extend(data_path.rglob(pat))
+        if not labels:
+            labels = [
+                p for p in data_path.rglob("*.nii*")
+                if any(k in p.name.lower() for k in ["label", "seg", "mask"])
+                and not p.name.startswith("._")
+            ]
+        labels = sorted(list(set(labels)))
+
+        if not images:
+            raise FileNotFoundError(
+                f"No image files found in {data_path} matching NIfTI formats (*.nii, *.nii.gz, *_img.nii*, *_image.nii*)"
+            )
 
         all_files = [{"image": str(img), "label": str(lbl)} for img, lbl in zip(images, labels)]
         split_idx = max(1, int(len(all_files) * (1.0 - float(cfg["val_split"]))))

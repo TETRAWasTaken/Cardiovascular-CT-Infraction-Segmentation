@@ -1,5 +1,14 @@
+import os
 import sys
 from pathlib import Path
+
+# Prevent NVIDIA MPS Error 805 if stale MPS environment variable is active
+if "CUDA_MPS_PIPE_DIRECTORY" in os.environ:
+    mps_dir = Path(os.environ["CUDA_MPS_PIPE_DIRECTORY"])
+    if not mps_dir.exists() or not (mps_dir / "control").exists():
+        print(f"[NOTICE] Unsetting stale CUDA_MPS_PIPE_DIRECTORY='{mps_dir}' to allow direct GPU access.")
+        os.environ.pop("CUDA_MPS_PIPE_DIRECTORY", None)
+        os.environ.pop("CUDA_MPS_LOG_DIRECTORY", None)
 
 # Set up project home directory in sys.path so 'Transformer' can be located
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -15,10 +24,27 @@ except ModuleNotFoundError:
     from src.tune import run_hyperparameter_tuning
 
 
+def _detect_dataset_dir() -> str:
+    env_dir = os.environ.get("DATA_DIR")
+    if env_dir and Path(env_dir).exists():
+        return env_dir
+    candidates = [
+        PROJECT_ROOT / "data" / "extracted",
+        PROJECT_ROOT / "data",
+        PROJECT_ROOT / "Data" / "extracted",
+        PROJECT_ROOT / "Data",
+    ]
+    for c in candidates:
+        if c.exists() and any(c.rglob("*.nii*")):
+            return str(c)
+    return "/path/to/data"
+
+
 # Base configuration applied to all trials
 base_config = {
     # Dataset and Output paths
-    "data_dir": "/path/to/data",  # Replace with your NIfTI dataset path
+    "data_dir": _detect_dataset_dir(),  # Set to your NIfTI dataset path, or set sanity_check: True
+    "sanity_check": False,              # Set True to run with synthetic cardiac volumes
     "output_dir": str(Path(__file__).resolve().parent / "artifacts" / "tuning_adamw"),
     "val_split": 0.2,
     "cache_rate": 1.0,
@@ -70,6 +96,25 @@ param_grid = {
 }
 
 if __name__ == "__main__":
+    # Pre-flight check: validate dataset configuration before starting trials
+    data_dir_str = base_config.get("data_dir", "")
+    data_path = Path(data_dir_str).expanduser()
+    is_sanity = base_config.get("sanity_check", False)
+
+    if not is_sanity and (data_dir_str == "/path/to/data" or not data_path.exists()):
+        print("\n" + "=" * 75)
+        print("❌ [CONFIG ERROR] Dataset directory not found or unconfigured!")
+        print(f"Current setting: '{data_dir_str}'")
+        print("=" * 75)
+        print("Please configure 'data_dir' in Transformer/run.py with your dataset path, e.g.:")
+        print("    base_config['data_dir'] = '/home/CL502-27/Cardiovascular-CT-Infraction-Segmentation/data/extracted'")
+        print("\nOr provide via environment variable:")
+        print("    DATA_DIR=/path/to/data python Transformer/run.py")
+        print("\nOr validate the pipeline using synthetic cardiac volumes by setting:")
+        print("    base_config['sanity_check'] = True")
+        print("=" * 75 + "\n")
+        sys.exit(1)
+
     # GPU Sharding: Trains 2 models simultaneously!
     # - If multiple physical GPUs exist (e.g. 2 GPUs), automatically assigns ['cuda:0', 'cuda:1']
     # - If single GPU exists, shards VRAM dynamically (e.g. 48% each) on ['cuda:0', 'cuda:0']
