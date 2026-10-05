@@ -282,7 +282,15 @@ def resolve_device_pool(
     cuda_available = torch.cuda.is_available()
     num_cuda_gpus = torch.cuda.device_count() if cuda_available else 0
 
-    if default_device.startswith("cuda") and cuda_available:
+    if default_device.startswith("cuda"):
+        if not cuda_available:
+            raise RuntimeError(
+                f"[DEVICE ERROR] CUDA was explicitly requested (device='{default_device}'), "
+                "but PyTorch reported that CUDA is NOT available on this machine!\n"
+                "Reason: Likely the CUDA initialization error shown above (e.g. Error 805: NVIDIA MPS daemon not running).\n"
+                "Please fix the CUDA environment (e.g. run 'unset CUDA_MPS_PIPE_DIRECTORY && rm -rf /tmp/nvidia-mps') "
+                "or explicitly configure device='cpu' if you intended to train on CPU."
+            )
         if num_cuda_gpus >= max_parallel_jobs:
             # Distribute across distinct physical GPUs
             return [(f"cuda:{i}", f"GPU-{i}") for i in range(max_parallel_jobs)]
@@ -290,7 +298,7 @@ def resolve_device_pool(
             # Single or fewer physical GPUs -> shard into virtual GPUs (vGPU-0, vGPU-1, ...)
             return [(f"cuda:{i % num_cuda_gpus}", f"vGPU-{i}") for i in range(max_parallel_jobs)]
 
-    # Fallback to CPU
+    # Explicitly requested CPU
     return [("cpu", f"CPU-{i}") for i in range(max_parallel_jobs)]
 
 
