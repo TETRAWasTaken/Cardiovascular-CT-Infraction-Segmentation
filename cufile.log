@@ -1,0 +1,20 @@
+ 05-10-2026 23:01:39:669 [pid=112698 tid=112698] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 05-10-2026 23:01:39:669 [pid=112698 tid=112698] NOTICE  cufio-drv:851 running in compatible mode
+ 06-10-2026 07:20:46:432 [pid=135109 tid=135109] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 06-10-2026 07:20:46:432 [pid=135109 tid=135109] NOTICE  cufio-drv:851 running in compatible mode
+ 06-10-2026 15:40:54:454 [pid=155042 tid=155042] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 06-10-2026 15:40:54:454 [pid=155042 tid=155042] NOTICE  cufio-drv:851 running in compatible mode
+ 06-10-2026 23:58:39:835 [pid=164084 tid=164084] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 06-10-2026 23:58:39:835 [pid=164084 tid=164084] NOTICE  cufio-drv:851 running in compatible mode
+ 07-10-2026 08:20:00:284 [pid=165391 tid=165391] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 07-10-2026 08:20:00:284 [pid=165391 tid=165391] NOTICE  cufio-drv:851 running in compatible mode
+ 07-10-2026 16:37:43:872 [pid=174791 tid=174791] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 07-10-2026 16:37:43:872 [pid=174791 tid=174791] NOTICE  cufio-drv:851 running in compatible mode
+ 08-10-2026 00:59:48:390 [pid=176918 tid=176918] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 08-10-2026 00:59:48:390 [pid=176918 tid=176918] NOTICE  cufio-drv:851 running in compatible mode
+ 08-10-2026 09:19:24:195 [pid=177796 tid=177796] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 08-10-2026 09:19:24:195 [pid=177796 tid=177796] NOTICE  cufio-drv:851 running in compatible mode
+ 08-10-2026 17:40:03:697 [pid=191053 tid=191053] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 08-10-2026 17:40:03:697 [pid=191053 tid=191053] NOTICE  cufio-drv:851 running in compatible mode
+ 09-10-2026 01:58:30:829 [pid=193444 tid=193444] ERROR  cufio-cuda:647 cuCtxCreate failed for GPU: 0
+ 09-10-2026 01:58:30:829 [pid=193444 tid=193444] NOTICE  cufio-drv:851 running in compatible mode

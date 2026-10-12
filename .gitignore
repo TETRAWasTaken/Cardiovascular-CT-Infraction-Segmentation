@@ -3,3 +3,6 @@ Data/
 
 *.pyc
 *.gz
+*.pt
+Transformer/artifacts/tuning_adamw/trials/trial_008/checkpoint_latest.pt
+Transformer/artifacts/tuning_adamw/trials/trial_008/model_best.pt
